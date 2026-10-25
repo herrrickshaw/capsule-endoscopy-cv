@@ -60,6 +60,23 @@ dropped and counted.
 (Saurin P0–P3, Lewis/CECDAI, SPICE, cleansing scales) and published AI benchmarks. It maps each
 result type to what this tool does and does not detect.
 
+## Related projects
+
+Datasets for validating or training detectors:
+- [simula/kvasir-capsule](https://github.com/simula/kvasir-capsule): official Kvasir-Capsule repo (117 videos, 47,238 labelled frames, 14 classes).
+- [EKFZ-AI-Endoscopy/GalarCapsuleML](https://github.com/EKFZ-AI-Endoscopy/GalarCapsuleML): code for the Galar dataset (videos labelled per frame, with several labels allowed per frame).
+- [MECLabTUDA/kvasir-capsule-loader](https://github.com/MECLabTUDA/kvasir-capsule-loader): unofficial Python loader for Kvasir-Capsule.
+
+Comparable systems and models:
+- [CUHK-AIM-Group/CE-Reporter](https://github.com/CUHK-AIM-Group/CE-Reporter): turns a capsule video into a written report using a vision-language model (LLaVA-based; needs a GPU).
+- [abhijeetdhupia/WCE-Pipeline](https://github.com/abhijeetdhupia/WCE-Pipeline): sorts frames into normal and abnormal, then segments the abnormal ones (trained on the KID dataset).
+- [mvrcii/capsule_vision_challenge_2024](https://github.com/mvrcii/capsule_vision_challenge_2024): 3rd place in Capsule Vision 2024; adapts a pre-trained foundation model to endoscopy images.
+- [MAILAB-Yonsei/capsule_endoscopy_detection](https://github.com/MAILAB-Yonsei/capsule_endoscopy_detection): lesion detection that combines 11 detector models.
+
+Simulation and image enhancement:
+- [CapsuleEndoscope/VirtualCapsuleEndoscopy](https://github.com/CapsuleEndoscope/VirtualCapsuleEndoscopy): VR-Caps, a Unity simulator that generates synthetic capsule data. It is more realistic than `capsule_cv.synth`.
+- [longbai1006/LLCaps](https://github.com/longbai1006/LLCaps): enhancement for dark (low-light) capsule images (MICCAI 2023).
+
 ## Calibration and limits
 
 All thresholds live in `analysis.Thresholds`. They were tuned on the synthetic generator, which has
