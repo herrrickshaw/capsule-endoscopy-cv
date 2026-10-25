@@ -54,6 +54,12 @@ Big-endian header `!4sIdII` = magic `CAPS`, sequence number, timestamp (s since 
 payload length, CRC32. The JPEG payload follows. Sequence gaps count as lost frames. CRC failures are
 dropped and counted.
 
+## Clinical context
+
+[docs/LITERATURE.md](docs/LITERATURE.md) reviews guideline indications, result types and grading
+(Saurin P0–P3, Lewis/CECDAI, SPICE, cleansing scales) and published AI benchmarks. It maps each
+result type to what this tool does and does not detect.
+
 ## Calibration and limits
 
 All thresholds live in `analysis.Thresholds`. They were tuned on the synthetic generator, which has
