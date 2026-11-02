@@ -128,7 +128,7 @@ def annotate(img: np.ndarray, r: FrameResult, red_mask: np.ndarray | None) -> np
     if r.bleeding:
         tags.append(f"BLOOD {r.bleeding_score:.0%}")
     if r.lesions:
-        tags.append("LESION " + ",".join(sorted({l["kind"] for l in r.lesions})))
+        tags.append("LESION " + ",".join(sorted({les["kind"] for les in r.lesions})))
     label = f"#{r.index} t={r.timestamp:.1f}s " + " ".join(tags)
     cv2.putText(out, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(out, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
@@ -353,7 +353,7 @@ def group_events(results: list[FrameResult], kind: str, gap_s: float, min_frames
     if kind == "bleeding":
         flag, score = (lambda r: r.bleeding), (lambda r: r.bleeding_score)
     else:
-        flag, score = (lambda r: bool(r.lesions)), (lambda r: max(l["area"] for l in r.lesions))
+        flag, score = (lambda r: bool(r.lesions)), (lambda r: max(les["area"] for les in r.lesions))
     events, run = [], []
 
     def close():
