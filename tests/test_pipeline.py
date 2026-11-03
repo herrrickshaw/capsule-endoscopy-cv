@@ -1,5 +1,4 @@
 import socket
-import struct
 import threading
 
 import numpy as np
@@ -34,7 +33,7 @@ def test_lesions_found_with_right_kind(synthetic):
     cap, study = synthetic
     for kind in ("pale", "red"):
         span = cap.truth[f"lesion_{kind}"][0]
-        hits = [r for r in study.results[span[0]:span[1]] if any(l["kind"] == kind for l in r.lesions)]
+        hits = [r for r in study.results[span[0]:span[1]] if any(les["kind"] == kind for les in r.lesions)]
         assert len(hits) >= (span[1] - span[0]) // 2, kind
     lesion_events = [e for e in study.events if e.kind == "lesion"]
     truth = cap.truth["lesion_pale"] + cap.truth["lesion_red"]

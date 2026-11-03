@@ -7,3 +7,5 @@ report/
 synthetic/
 session_frames/
 capsule_report/
+*.egg-info/
+.ruff_cache/
