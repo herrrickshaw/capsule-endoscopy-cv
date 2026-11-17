@@ -37,7 +37,7 @@ def write_frames_csv(study: Study, path: Path) -> None:
         for r in study.results:
             w.writerow([r.index, f"{r.timestamp:.3f}", r.region, int(r.usable), int(r.duplicate), r.brightness,
                         r.sharpness, r.overexposed, r.debris, r.bleeding_score, int(r.bleeding), len(r.lesions),
-                        "|".join(sorted({l["kind"] for l in r.lesions}))])
+                        "|".join(sorted({les["kind"] for les in r.lesions}))])
 
 
 def _timeline_svg(study: Study, width: int = 1000, height: int = 170) -> str:
@@ -46,7 +46,10 @@ def _timeline_svg(study: Study, width: int = 1000, height: int = 170) -> str:
         return ""
     t0, t1 = rs[0].timestamp, rs[-1].timestamp
     span = max(t1 - t0, 1e-9)
-    x = lambda t: 40 + (t - t0) / span * (width - 50)
+
+    def x(t: float) -> float:
+        return 40 + (t - t0) / span * (width - 50)
+
     parts = [f'<svg viewBox="0 0 {width} {height}" class="timeline" role="img" aria-label="Study timeline">']
     edges = [t0] + list(study.boundaries) + [t1]
     names = list(REGION_NAMES) if len(study.boundaries) == 2 else ["unknown"]
@@ -72,8 +75,8 @@ def _timeline_svg(study: Study, width: int = 1000, height: int = 170) -> str:
         parts.append(f'<rect x="{x(e.start_time):.1f}" y="138" width="{max(2, x(e.end_time) - x(e.start_time)):.1f}" '
                      f'height="10" fill="{color}"><title>{e.kind} {_fmt_t(e.start_time)}-{_fmt_t(e.end_time)}'
                      f'</title></rect>')
-    parts.append(f'<text x="4" y="40" class="lbl">blood</text><text x="4" y="131" class="lbl">poor</text>'
-                 f'<text x="4" y="147" class="lbl">events</text>')
+    parts.append('<text x="4" y="40" class="lbl">blood</text><text x="4" y="131" class="lbl">poor</text>'
+                 '<text x="4" y="147" class="lbl">events</text>')
     parts.append(f'<text x="40" y="165" class="lbl">{_fmt_t(t0)}</text>'
                  f'<text x="{width - 10}" y="165" class="lbl" text-anchor="end">{_fmt_t(t1)}</text></svg>')
     return "".join(parts)
@@ -104,7 +107,10 @@ td img{width:120px;border-radius:4px}
 
 def write_html(study: Study, path: Path, title: str = "Capsule Endoscopy Study Report") -> None:
     s = study.summary()
-    k = lambda label, val: f'<div class="kpi"><b>{html.escape(str(val))}</b><span>{label}</span></div>'
+
+    def k(label: str, val) -> str:
+        return f'<div class="kpi"><b>{html.escape(str(val))}</b><span>{label}</span></div>'
+
     kpis = [k("frames", s["frames"]), k("recording", _fmt_t(s["duration_s"])), k("usable", f'{s["usable_pct"]}%'),
             k("frames to review", s["frames_to_review"]), k("review reduction", f'{s["review_reduction_pct"]}%'),
             k("bleeding events", s["events"]["bleeding"]), k("lesion events", s["events"]["lesion"])]

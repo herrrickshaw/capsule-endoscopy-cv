@@ -40,7 +40,10 @@ class SyntheticCapsule:
         b1, b2 = int(0.15 * n_frames), int(0.75 * n_frames)
         self.boundaries = [b1, b2]
         self.tex = {name: _texture(self.rng, 1024, name == "small bowel") for name in REGION_BASE}
-        span = lambda lo, hi, ln: (int(lo * n_frames), int(lo * n_frames) + ln)
+
+        def span(lo: float, hi: float, ln: int) -> tuple[int, int]:
+            return (int(lo * n_frames), int(lo * n_frames) + ln)
+
         self.truth = {
             "bleeding": [span(0.35, 0, 18), span(0.62, 0, 12)],
             "lesion_pale": [span(0.48, 0, 10)],

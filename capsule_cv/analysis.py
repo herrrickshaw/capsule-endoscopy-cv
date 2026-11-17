@@ -21,6 +21,11 @@ REGION_NAMES = ("stomach", "small bowel", "colon")
 THUMB_MAX = 320
 MAX_ANNOTATED = 3000
 OVERVIEW_TARGET = 200
+SPECULAR_V = 240  # HSV value above which low-saturation pixels count as specular highlights
+SPECULAR_S = 30
+DEBRIS_HUE = (28, 60)  # OpenCV hue range (0-180) of yellow-green bile/debris
+LESION_MIN_SOLIDITY = 0.5  # blob area / bounding-box area
+LESION_MAX_ASPECT = 3  # longest / shortest bounding-box side
 
 
 @dataclass
@@ -123,7 +128,7 @@ def annotate(img: np.ndarray, r: FrameResult, red_mask: np.ndarray | None) -> np
     if r.bleeding:
         tags.append(f"BLOOD {r.bleeding_score:.0%}")
     if r.lesions:
-        tags.append("LESION " + ",".join(sorted({l["kind"] for l in r.lesions})))
+        tags.append("LESION " + ",".join(sorted({les["kind"] for les in r.lesions})))
     label = f"#{r.index} t={r.timestamp:.1f}s " + " ".join(tags)
     cv2.putText(out, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
     cv2.putText(out, label, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
@@ -145,33 +150,70 @@ class FrameAnalyzer:
         return self._masks[key]
 
     def analyze(self, frame: Frame) -> tuple[FrameResult, np.ndarray]:
+        """Analyse one BGR frame. Returns its metrics and the suspected-blood mask (uint8, 0/255).
+
+        Stateful: redundancy is judged against the last retained frame, so feed frames in order.
+        """
         th, img = self.th, frame.image
         mask, inner = self._mask(img)
         fov = mask > 0
         n = max(int(fov.sum()), 1)
 
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
+        q = self._quality(hsv, gray, fov, inner, n)
+        red_mask, bleeding_score = self._blood(img, hsv, fov, n)
+        bleed_active = bleeding_score >= th.bleed_fraction
+        lesions, mA, mB = self._lesions(img, hsv, fov, inner, n, q["specular"], q["debris_mask"],
+                                        red_mask, bleed_active)
+        duplicate = self._is_duplicate(gray, hsv, mask)
+
+        result = FrameResult(
+            index=frame.index, timestamp=frame.timestamp, brightness=round(q["brightness"], 2),
+            sharpness=round(q["sharpness"], 3), overexposed=round(q["overexposed"], 4),
+            debris=round(q["debris"], 4), usable=bool(q["usable"]), bleeding_score=round(bleeding_score, 4),
+            bleeding=bleed_active, lesions=lesions if q["usable"] else [],
+            duplicate=duplicate, mean_a=round(mA, 2), mean_b=round(mB, 2),
+        )
+        return result, red_mask
+
+    def _quality(self, hsv: np.ndarray, gray: np.ndarray, fov: np.ndarray, inner: np.ndarray, n: int) -> dict:
+        """Image-quality metrics (brightness, sharpness, over-exposure, debris) and the `usable` verdict."""
+        th = self.th
+        h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
         brightness = float(gray[fov].mean())
         sharpness = sharpness_score(gray, inner > 0)
-        specular = (v > 240) & (s < 30)
+        specular = (v > SPECULAR_V) & (s < SPECULAR_S)
         overexposed = float((specular & fov).sum() / n)
-        debris_mask = (h >= 28) & (h <= 60) & (s > 80) & (v > 40) & fov
+        debris_mask = (h >= DEBRIS_HUE[0]) & (h <= DEBRIS_HUE[1]) & (s > 80) & (v > 40) & fov
         debris = float(debris_mask.sum() / n)
         usable = (th.min_brightness <= brightness <= th.max_brightness and sharpness >= th.min_sharpness
                   and overexposed <= th.max_overexposed and debris <= th.max_debris)
+        return {"brightness": brightness, "sharpness": sharpness, "specular": specular,
+                "overexposed": overexposed, "debris_mask": debris_mask, "debris": debris, "usable": usable}
 
-        # Suspected blood: saturated red hue AND strong R/G dominance (pink mucosa fails the ratio).
-        b, g, r = (img[..., i].astype(np.float32) for i in range(3))
+    def _blood(self, img: np.ndarray, hsv: np.ndarray, fov: np.ndarray, n: int) -> tuple[np.ndarray, float]:
+        """Suspected blood: saturated red hue AND strong R/G dominance (pink mucosa fails the ratio).
+
+        Returns (uint8 0/255 mask, fraction of the field of view).
+        """
+        h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        g, r = img[..., 1].astype(np.float32), img[..., 2].astype(np.float32)
         red_hue = (h <= 8) | (h >= 170)
-        red = red_hue & (s >= 120) & (v >= 40) & (v <= 235) & (r / (g + 1.0) >= th.bleed_red_ratio) & fov
+        red = red_hue & (s >= 120) & (v >= 40) & (v <= 235) & (r / (g + 1.0) >= self.th.bleed_red_ratio) & fov
         red_mask = cv2.morphologyEx(red.astype(np.uint8) * 255, cv2.MORPH_OPEN, self._kernel)
-        bleeding_score = float((red_mask > 0).sum() / n)
+        return red_mask, float((red_mask > 0).sum() / n)
 
-        # Lesion candidates: focal colour departures from the *local* mucosa background. A median filter
-        # keeps edges, so bright tissue beside the dark lumen or a fold isn't mistaken for a spot.
+    def _lesions(self, img: np.ndarray, hsv: np.ndarray, fov: np.ndarray, inner: np.ndarray, n: int,
+                 specular: np.ndarray, debris_mask: np.ndarray, red_mask: np.ndarray,
+                 bleed_active: bool) -> tuple[list[dict], float, float]:
+        """Focal colour departures from the *local* mucosa background (pale and red spots).
+
+        A median filter keeps edges, so bright tissue beside the dark lumen or a fold isn't mistaken for a
+        spot. Returns (lesions, median a*, median b* of the tissue).
+        """
+        th, s = self.th, hsv[..., 1]
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         ksize = max(15, (min(img.shape[:2]) // 8) | 1)
         L, A = (lab[..., i].astype(np.float32) for i in (0, 1))
@@ -179,27 +221,31 @@ class FrameAnalyzer:
         dA = A - cv2.medianBlur(lab[..., 1], ksize).astype(np.float32)
         tissue = fov & (L > 40) & ~specular
         mA, mB = (float(np.median(lab[..., i][tissue if tissue.any() else fov])) for i in (1, 2))
-        lesions = []
+        blood = (red_mask > 0) & bleed_active
         candidates = {
             "pale": (dL > th.pale_delta_l) & (s >= 30) & ~specular,
             # on frames that already read as bleeding, the blood itself is not a separate focal lesion
-            "red": (dA > th.red_delta_a) & ~((red_mask > 0) & (bleeding_score >= th.bleed_fraction)),
+            "red": (dA > th.red_delta_a) & ~blood,
         }
         # Tissue bordering blood or bile/debris reads as locally pale/red; don't call it a lesion.
-        confounders = debris_mask | ((red_mask > 0) & (bleeding_score >= th.bleed_fraction))
-        near_conf = cv2.dilate(confounders.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+        near_conf = cv2.dilate((debris_mask | blood).astype(np.uint8), np.ones((15, 15), np.uint8)) > 0
+        lesions = []
         for kind, cand in candidates.items():
             cand = cand & (inner > 0) & ~near_conf
             cm = cv2.morphologyEx(cand.astype(np.uint8) * 255, cv2.MORPH_OPEN, self._kernel)
-            count, labels, stats, _ = cv2.connectedComponentsWithStats(cm, connectivity=8)
+            count, _, stats, _ = cv2.connectedComponentsWithStats(cm, connectivity=8)
             for i in range(1, count):
                 x, y, w, hh, area = (int(v_) for v_ in stats[i])
                 frac = area / n
                 solidity = area / max(w * hh, 1)  # spots are compact; fold/edge slivers are not
-                if th.lesion_min_area <= frac <= th.lesion_max_area and solidity >= 0.5 and max(w, hh) <= 3 * min(w, hh):
+                if (th.lesion_min_area <= frac <= th.lesion_max_area and solidity >= LESION_MIN_SOLIDITY
+                        and max(w, hh) <= LESION_MAX_ASPECT * min(w, hh)):
                     lesions.append({"kind": kind, "box": [x, y, w, hh], "area": round(frac, 5)})
+        return lesions, mA, mB
 
-        # Redundancy vs last retained frame (capsules dwell, producing near-identical runs).
+    def _is_duplicate(self, gray: np.ndarray, hsv: np.ndarray, mask: np.ndarray) -> bool:
+        """Redundancy vs the last retained frame (capsules dwell, producing near-identical runs)."""
+        th = self.th
         small = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA).astype(np.float32)
         hist = cv2.calcHist([hsv], [0, 1], mask, [30, 32], [0, 180, 0, 256])
         cv2.normalize(hist, hist)
@@ -211,15 +257,7 @@ class FrameAnalyzer:
             duplicate = corr >= th.duplicate_hist_corr and mad <= th.duplicate_mad
         if not duplicate:
             self._last_kept = (small, hist)
-
-        result = FrameResult(
-            index=frame.index, timestamp=frame.timestamp, brightness=round(brightness, 2),
-            sharpness=round(sharpness, 3), overexposed=round(overexposed, 4), debris=round(debris, 4),
-            usable=bool(usable), bleeding_score=round(bleeding_score, 4),
-            bleeding=bleeding_score >= th.bleed_fraction, lesions=lesions if usable else [],
-            duplicate=duplicate, mean_a=round(mA, 2), mean_b=round(mB, 2),
-        )
-        return result, red_mask
+        return duplicate
 
 
 @dataclass
@@ -315,7 +353,7 @@ def group_events(results: list[FrameResult], kind: str, gap_s: float, min_frames
     if kind == "bleeding":
         flag, score = (lambda r: r.bleeding), (lambda r: r.bleeding_score)
     else:
-        flag, score = (lambda r: bool(r.lesions)), (lambda r: max(l["area"] for l in r.lesions))
+        flag, score = (lambda r: bool(r.lesions)), (lambda r: max(les["area"] for les in r.lesions))
     events, run = [], []
 
     def close():
