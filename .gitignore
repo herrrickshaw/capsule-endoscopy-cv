@@ -9,3 +9,5 @@ session_frames/
 capsule_report/
 *.egg-info/
 .ruff_cache/
+.coverage
+coverage.xml
