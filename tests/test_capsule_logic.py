@@ -641,3 +641,72 @@ class TestCli:
         with pytest.raises(SystemExit) as e:
             runpy.run_module("capsule_cv", run_name="__main__")
         assert e.value.code == 3
+
+
+class TestBoundaryPins:
+    def test_duplicate_correlation_threshold_is_inclusive(self, monkeypatch):
+        monkeypatch.setattr(analysis.cv2, "compareHist", lambda *a, **k: 0.98)
+        img = uniform((100, 100, 100))
+        fa = FrameAnalyzer()
+        assert [fa.analyze(Frame(i, i, img))[0].duplicate for i in range(2)] == [False, True]
+
+    def test_reference_does_not_drift_through_duplicates(self):
+        # uniform frames 100 -> 104 -> 108: each step is within the MAD limit (5) of its neighbour,
+        # but 108 is 8 away from the last *retained* frame (100), so it must not be a duplicate
+        fa = FrameAnalyzer()
+        flags = [fa.analyze(Frame(i, i, uniform((v, v, v))))[0].duplicate for i, v in enumerate((100, 104, 108))]
+        assert flags == [False, True, False]
+
+    @pytest.mark.parametrize("corner,full", [(20, True), (19, False)])
+    def test_field_of_view_corner_threshold(self, corner, full):
+        img = np.full((64, 64, 3), 150, np.uint8)
+        c = 4
+        for ys, xs in ((slice(0, c), slice(0, c)), (slice(0, c), slice(-c, None)),
+                       (slice(-c, None), slice(0, c)), (slice(-c, None), slice(-c, None))):
+            img[ys, xs] = corner
+        assert bool(analysis.field_of_view_mask(img).all()) is full
+
+    def test_flat_frame_has_zero_sharpness(self):
+        flat = np.full((64, 64), 120, np.uint8)
+        assert analysis.sharpness_score(flat, np.ones((64, 64), bool)) == 0.0
+
+    def test_segment_regions_minimum_is_thirty_usable_frames(self):
+        def frames(n):
+            return [res(i, float(i), mean_a=(10.0 if i < n // 3 else 40.0 if i < 2 * n // 3 else 20.0))
+                    for i in range(n)]
+        assert segment_regions(frames(29)) == ([], 0.0)
+        bounds, conf = segment_regions(frames(30))
+        assert len(bounds) == 2 and conf > 0.5
+
+    def test_overview_decimates_only_when_strictly_over_twice_the_target(self, monkeypatch):
+        class FA:
+            def __init__(self, thresholds=None):
+                self.th = Thresholds()
+
+            def analyze(self, f):
+                return res(f.index, f.timestamp), np.zeros((16, 16), np.uint8)
+
+        monkeypatch.setattr(analysis, "FrameAnalyzer", FA)
+        monkeypatch.setattr(analysis, "OVERVIEW_TARGET", 2)
+        frames = lambda n: (Frame(i, i * 0.5, uniform((i, i, i), 16)) for i in range(n))  # noqa: E731
+        assert sorted(analyze_stream(frames(4)).overview) == [0, 1, 2, 3]      # 4 == 2 * target: kept
+        assert sorted(analyze_stream(frames(5)).overview) == [0, 2, 4]         # 5 > 4: stride doubles
+
+    def test_highlights_sample_every_frame_when_few(self, tmp_path):
+        ev = [Event("bleeding", 0, 4, 0.0, 4.0, 2, 0.2, 5, "colon")]
+        annotated = {i: uniform((i * 10, 50, 50), 100) for i in range(5)}
+        st = Study("s", [res(i) for i in range(5)], ev, [], 0.0, annotated, {})
+        assert report.write_highlights(st, tmp_path / "h.mp4", fps=4.0, per_event=24) == 4 + 5
+
+    def test_timeline_blood_axis_floor(self):
+        rs = [res(i, float(i), bleeding_score=0.05 if i == 4 else 0.0) for i in range(10)]
+        svg = report._timeline_svg(Study("s", rs, [], [], 0.0, {}, {}))
+        poly = svg.split('<polyline points="')[1].split('"')[0]
+        ys = [float(p.split(",")[1]) for p in poly.split()]
+        assert min(ys) == 75.0 and max(ys) == 120.0     # 0.05 on a 0.1 floor -> half of the 90 px plot
+
+    def test_synth_cli_defaults(self, monkeypatch, capsys):
+        seen = {}
+        monkeypatch.setattr(synth, "write_video", lambda *a: seen.setdefault("a", a) and "out.mp4")
+        assert cli.main(["synth"]) == 0
+        assert seen["a"] == ("synthetic/capsule.mp4", 600, 256, 4.0, 7, False)
